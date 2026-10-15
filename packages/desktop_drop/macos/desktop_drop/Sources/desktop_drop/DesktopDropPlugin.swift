@@ -114,7 +114,11 @@ class DropTarget: NSView {
 
   override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
     isDragging = true
-    channel.invokeMethod("entered", arguments: convertPoint(sender.draggingLocation))
+    // Paths are known before the drop; promised files have none yet.
+    let paths = fileURLs(in: sender.draggingPasteboard).map { $0.path }
+    var arguments: [Any] = convertPoint(sender.draggingLocation)
+    arguments.append(paths)
+    channel.invokeMethod("entered", arguments: arguments)
     return .copy
   }
 
@@ -192,14 +196,10 @@ class DropTarget: NSView {
     }
 
     // Prefer real file URLs if they exist; only fall back to promises
-    let urls = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
-    let legacyList = (pb.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String]) ?? []
+    let urls = fileURLs(in: pb)
 
-    if !urls.isEmpty || !legacyList.isEmpty {
-      // 1) Modern file URLs
+    if !urls.isEmpty {
       urls.forEach { push(url: $0, fromPromise: false) }
-      // 2) Legacy filename array used by some apps
-      legacyList.forEach { push(url: URL(fileURLWithPath: $0), fromPromise: false) }
     } else {
       // 3) Handle file promises (e.g., VS Code, browsers, Mail)
       if let receivers = pb.readObjects(forClasses: [NSFilePromiseReceiver.self], options: nil) as? [NSFilePromiseReceiver],
@@ -223,6 +223,15 @@ class DropTarget: NSView {
     }
     isDragging = false
     return true
+  }
+
+  /// File URLs on the pasteboard, without duplicates: modern file URLs, then
+  /// the legacy filename array used by some apps. Promised files aren't included.
+  private func fileURLs(in pb: NSPasteboard) -> [URL] {
+    let urls = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    let legacyList = (pb.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String]) ?? []
+    var seen = Set<String>()
+    return (urls + legacyList.map { URL(fileURLWithPath: $0) }).filter { seen.insert($0.path).inserted }
   }
 
   func convertPoint(_ location: NSPoint) -> [CGFloat] {

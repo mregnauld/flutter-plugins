@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+* [macOS] [Windows] [Linux] expose the paths of the dragged files before the drop, in `DropEnterEvent.paths` / `DropUpdateEvent.paths` and `DropEventDetails.paths` (`null` while unknown; on Linux they arrive with a later update event)
+* [Windows] read dropped paths longer than `MAX_PATH` whole
+
 ## 0.8.4
 
 * fix: use builtInKotlin property to conditionally apply KGP [#500](https://github.com/MixinNetwork/flutter-plugins/pull/500)

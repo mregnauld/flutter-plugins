@@ -24,6 +24,9 @@ class DesktopDrop {
 
   Offset? _offset;
 
+  /// Paths of the files in the current drag, see [DropHoverPaths.paths].
+  List<String>? _paths;
+
   void init() {
     if (_inited) {
       return;
@@ -74,24 +77,39 @@ class DesktopDrop {
   Future<void> _handleMethodChannel(MethodCall call) async {
     switch (call.method) {
       case "entered":
-        final position = (call.arguments as List).cast<double>();
-        _offset = Offset(position[0], position[1]);
-        _notifyEvent(DropEnterEvent(location: _offset!));
+        // [x, y, paths] on macOS and Windows; [x, y] from older plugins.
+        final arguments = call.arguments as List;
+        _offset = Offset(arguments[0] as double, arguments[1] as double);
+        _paths = arguments.length > 2
+            ? (arguments[2] as List).cast<String>().toList()
+            : null;
+        _notifyEvent(DropEnterEvent(location: _offset!, paths: _paths));
         break;
       case "updated":
         if (_offset == null && UniversalPlatform.isLinux) {
           final position = (call.arguments as List).cast<double>();
           _offset = Offset(position[0], position[1]);
+          _paths = null;
           _notifyEvent(DropEnterEvent(location: _offset!));
           return;
         }
         final position = (call.arguments as List).cast<double>();
         _offset = Offset(position[0], position[1]);
-        _notifyEvent(DropUpdateEvent(location: _offset!));
+        _notifyEvent(DropUpdateEvent(location: _offset!, paths: _paths));
+        break;
+      case "hoverPaths_linux":
+        // GTK hands the drag data over asynchronously, after the first
+        // motion events. Ignore a reply that arrives once the drag is over.
+        if (_offset == null) {
+          return;
+        }
+        _paths = _parseLinuxUris(call.arguments as String).toList();
+        _notifyEvent(DropUpdateEvent(location: _offset!, paths: _paths));
         break;
       case "exited":
         _notifyEvent(DropExitEvent(location: _offset ?? Offset.zero));
         _offset = null;
+        _paths = null;
         break;
       case "performOperation":
         final paths = (call.arguments as List).cast<String>();
@@ -102,6 +120,7 @@ class DesktopDrop {
           ),
         );
         _offset = null;
+        _paths = null;
         break;
       case "performOperation_macos":
         final items = (call.arguments as List).cast<Map>();
@@ -130,6 +149,7 @@ class DesktopDrop {
           ),
         );
         _offset = null;
+        _paths = null;
         break;
 
       case "performOperation_linux":
@@ -137,23 +157,8 @@ class DesktopDrop {
         final text = (call.arguments as List<dynamic>)[0] as String;
         final offset = ((call.arguments as List<dynamic>)[1] as List<dynamic>)
             .cast<double>();
-        final paths = const LineSplitter().convert(text).map((e) {
-          try {
-            final uri = Uri.tryParse(e);
-            if (uri == null || !uri.hasScheme) {
-              // No scheme = likely a portal key
-              return '';
-            }
-            if (uri.scheme == 'file') {
-              return uri.toFilePath(windows: false);
-            }
-            // smb://, http://, etc. - keep as-is (not portal keys)
-            return e;
-          } catch (error, stacktrace) {
-            debugPrint('failed to parse linux path: $error $stacktrace');
-          }
-          return '';
-        }).where((e) => e.isNotEmpty);
+        final paths = _parseLinuxUris(text);
+        _paths = null;
         _notifyEvent(DropDoneEvent(
           location: Offset(offset[0], offset[1]),
           files: paths.map((e) => DropItemFile(e)).toList(),
@@ -169,6 +174,7 @@ class DesktopDrop {
         final portalOffset =
             ((call.arguments as List<dynamic>)[1] as List<dynamic>)
                 .cast<double>();
+        _paths = null;
         final paths = await _resolvePortalFiles(portalText);
         _notifyEvent(DropDoneEvent(
           location: Offset(portalOffset[0], portalOffset[1]),
@@ -186,10 +192,33 @@ class DesktopDrop {
           DropDoneEvent(location: _offset ?? Offset.zero, files: results),
         );
         _offset = null;
+        _paths = null;
         break;
       default:
         throw UnimplementedError('${call.method} not implement.');
     }
+  }
+
+  /// Paths from a `text/uri-list` payload: file URIs become paths, other
+  /// URIs are kept as is.
+  Iterable<String> _parseLinuxUris(String text) {
+    return const LineSplitter().convert(text).map((e) {
+      try {
+        final uri = Uri.tryParse(e);
+        if (uri == null || !uri.hasScheme) {
+          // No scheme = likely a portal key
+          return '';
+        }
+        if (uri.scheme == 'file') {
+          return uri.toFilePath(windows: false);
+        }
+        // smb://, http://, etc. - keep as-is (not portal keys)
+        return e;
+      } catch (error, stacktrace) {
+        debugPrint('failed to parse linux path: $error $stacktrace');
+      }
+      return '';
+    }).where((e) => e.isNotEmpty);
   }
 
   /// Resolves an XDG FileTransfer portal key into document-portal paths.

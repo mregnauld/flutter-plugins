@@ -51,11 +51,16 @@ class DropEventDetails {
   DropEventDetails({
     required this.localPosition,
     required this.globalPosition,
+    this.paths,
   });
 
   final Offset localPosition;
 
   final Offset globalPosition;
+
+  /// Paths of the files being dragged, known before the drop. See
+  /// [DropHoverPaths.paths]. Always `null` in [DropTarget.onDragExited].
+  final List<String>? paths;
 }
 
 typedef OnDragDoneCallback = void Function(DropDoneDetails details);
@@ -143,6 +148,7 @@ class _DropTargetState extends State<DropTarget> {
     final globalPosition = _scaleHoverPoint(context, event.location);
     final position = renderBox.globalToLocal(globalPosition);
     bool inBounds = renderBox.paintBounds.contains(position);
+    final paths = event is DropHoverPaths ? event.paths : null;
     if (event is DropEnterEvent) {
       if (!inBounds) {
         assert(_status == _DragTargetStatus.idle);
@@ -151,6 +157,7 @@ class _DropTargetState extends State<DropTarget> {
           _DragTargetStatus.enter,
           globalLocation: globalPosition,
           localLocation: position,
+          paths: paths,
         );
       }
     } else if (event is DropUpdateEvent) {
@@ -159,6 +166,7 @@ class _DropTargetState extends State<DropTarget> {
           _DragTargetStatus.enter,
           globalLocation: globalPosition,
           localLocation: position,
+          paths: paths,
         );
       } else if ((_status == _DragTargetStatus.enter ||
               _status == _DragTargetStatus.update) &&
@@ -167,6 +175,7 @@ class _DropTargetState extends State<DropTarget> {
           _DragTargetStatus.update,
           globalLocation: globalPosition,
           localLocation: position,
+          paths: paths,
           debugRequiredStatus: false,
         );
       } else if (_status != _DragTargetStatus.idle && !inBounds) {
@@ -205,12 +214,14 @@ class _DropTargetState extends State<DropTarget> {
     bool debugRequiredStatus = true,
     required Offset localLocation,
     required Offset globalLocation,
+    List<String>? paths,
   }) {
     assert(!debugRequiredStatus || _status != status);
     _status = status;
     final details = DropEventDetails(
       localPosition: localLocation,
       globalPosition: globalLocation,
+      paths: status == _DragTargetStatus.idle ? null : paths,
     );
     switch (_status) {
       case _DragTargetStatus.enter:

@@ -77,6 +77,32 @@ namespace {
         return ret;
     }
 
+    // Paths of the files held by a drag (CF_HDROP); empty when it holds none.
+    flutter::EncodableList ReadFilePaths(IDataObject *data_object) {
+        flutter::EncodableList list = {};
+
+        FORMATETC fmtetc = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        STGMEDIUM stgmed;
+        if (data_object->QueryGetData(&fmtetc) != S_OK || data_object->GetData(&fmtetc, &stgmed) != S_OK) {
+            return list;
+        }
+        auto drop = reinterpret_cast<HDROP>(GlobalLock(stgmed.hGlobal));
+        if (drop != nullptr) {
+            auto files = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < files; ++i) {
+                // Sized from the path itself, so paths longer than MAX_PATH are kept whole.
+                auto length = DragQueryFileW(drop, i, nullptr, 0);
+                std::wstring wide(length + 1, L'\0');
+                DragQueryFileW(drop, i, &wide[0], length + 1);
+                wide.resize(length);
+                list.push_back(flutter::EncodableValue(ws2s(wide)));
+            }
+            GlobalUnlock(stgmed.hGlobal);
+        }
+        ReleaseStgMedium(&stgmed);
+        return list;
+    }
+
 
     class DesktopDropTarget : public IDropTarget {
     public:
@@ -179,10 +205,12 @@ namespace {
     HRESULT DesktopDropTarget::DragEnter(IDataObject *pDataObj, DWORD grfKeyState, POINTL pt, DWORD *pdwEffect) {
         POINT point = {pt.x, pt.y};
         ScreenToClient(window_handle_, &point);
+        // Paths are known before the drop; DragOver doesn't get the data object.
         channel_->InvokeMethod("entered", std::make_unique<flutter::EncodableValue>(
                 flutter::EncodableList{
                         flutter::EncodableValue(double(point.x)),
-                        flutter::EncodableValue(double(point.y))
+                        flutter::EncodableValue(double(point.y)),
+                        flutter::EncodableValue(ReadFilePaths(pDataObj))
                 }
         ));
         return 0;
@@ -206,38 +234,7 @@ namespace {
     }
 
     HRESULT DesktopDropTarget::Drop(IDataObject *pDataObj, DWORD grfKeyState, POINTL pt, DWORD *pdwEffect) {
-
-        flutter::EncodableList list = {};
-
-        // construct a FORMATETC object
-        FORMATETC fmtetc = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-        STGMEDIUM stgmed;
-
-        // See if the dataobject contains any TEXT stored as a HGLOBAL
-        if (pDataObj->QueryGetData(&fmtetc) == S_OK) {
-            // Yippie! the data is there, so go get it!
-            if (pDataObj->GetData(&fmtetc, &stgmed) == S_OK) {
-                // we asked for the data as a HGLOBAL, so access it appropriately
-                PVOID data = GlobalLock(stgmed.hGlobal);
-                if (data != nullptr) {
-                    auto files = DragQueryFile(reinterpret_cast<HDROP>(data), 0xFFFFFFFF, nullptr, 0);
-                    for (unsigned int i = 0; i < files; ++i) {
-                        TCHAR filename[MAX_PATH];
-                        DragQueryFile(reinterpret_cast<HDROP>(data), i, filename, sizeof(TCHAR) * MAX_PATH);
-                        std::wstring wide(filename);
-                        std::string path = ws2s(wide);
-                        std::cout << "done: " << path << std::endl;
-                        list.push_back(flutter::EncodableValue(path));
-                    }
-                    GlobalUnlock(stgmed.hGlobal);
-                }
-
-                // release the data using the COM API
-                ReleaseStgMedium(&stgmed);
-            }
-        }
-        channel_->InvokeMethod("performOperation", std::make_unique<flutter::EncodableValue>(list));
-
+        channel_->InvokeMethod("performOperation", std::make_unique<flutter::EncodableValue>(ReadFilePaths(pDataObj)));
         return 0;
     }
 

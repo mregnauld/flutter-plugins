@@ -12,16 +12,31 @@ abstract class DropEvent {
   }
 }
 
-class DropEnterEvent extends DropEvent {
-  DropEnterEvent({required Offset location}) : super(location);
+/// Paths of the files being dragged, known before the drop.
+///
+/// `null` when the platform hasn't provided them (yet): on Linux they arrive
+/// with a later [DropUpdateEvent]. Empty when the drag holds no file (text,
+/// or files only promised by the source app, such as Mail or Photos on macOS).
+mixin DropHoverPaths on DropEvent {
+  List<String>? get paths;
+}
+
+class DropEnterEvent extends DropEvent with DropHoverPaths {
+  @override
+  final List<String>? paths;
+
+  DropEnterEvent({required Offset location, this.paths}) : super(location);
 }
 
 class DropExitEvent extends DropEvent {
   DropExitEvent({required Offset location}) : super(location);
 }
 
-class DropUpdateEvent extends DropEvent {
-  DropUpdateEvent({required Offset location}) : super(location);
+class DropUpdateEvent extends DropEvent with DropHoverPaths {
+  @override
+  final List<String>? paths;
+
+  DropUpdateEvent({required Offset location, this.paths}) : super(location);
 }
 
 class DropDoneEvent extends DropEvent {

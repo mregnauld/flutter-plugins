@@ -22,6 +22,10 @@ namespace {
     constexpr char kPortalTarget[] = "application/vnd.portal.filetransfer";
     constexpr char kUriTarget[] = "text/uri-list";
     constexpr char kDropPosition[] = "renamer-desktop-drop-position";
+    // State of the hover paths request, stored on the drag context.
+    constexpr char kHoverPaths[] = "desktop-drop-hover-paths";
+    constexpr gint kHoverPathsRequested = 1;
+    constexpr gint kHoverPathsDone = 2;
 
     struct DropPosition {
         gint x;
@@ -200,10 +204,27 @@ void on_drag_data_received(GtkWidget *widget, GdkDragContext *context,
                            guint time, gpointer user_data) {
   auto *position = static_cast<DropPosition *>(
           g_object_get_data(G_OBJECT(context), kDropPosition));
-  // Ignore data requested for hover inspection by another handler.
-  if (!position)
-    return;
   auto *channel = static_cast<FlMethodChannel *>(user_data);
+  if (!position) {
+    // Not a drop: the reply to on_drag_motion's hover paths request, if any.
+    // Data requested for hover inspection by another handler is ignored.
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(context), kHoverPaths)) !=
+        kHoverPathsRequested)
+      return;
+    g_object_set_data(G_OBJECT(context), kHoverPaths,
+                      GINT_TO_POINTER(kHoverPathsDone));
+    const gint length = gtk_selection_data_get_length(data);
+    const guchar *bytes = gtk_selection_data_get_data(data);
+    g_autofree gchar *text =
+            length > 0 && bytes
+            ? g_strndup(reinterpret_cast<const gchar *>(bytes), length)
+            : g_strdup("");
+    g_autoptr(FlValue) args = fl_value_new_string(
+            g_utf8_validate(text, -1, nullptr) ? text : "");
+    fl_method_channel_invoke_method(channel, "hoverPaths_linux", args,
+                                    nullptr, nullptr, nullptr);
+    return;
+  }
   receive_drop(new PendingDrop(widget, context, channel, *position),
                gtk_selection_data_get_target(data),
                gtk_selection_data_get_data(data),
@@ -215,6 +236,9 @@ gboolean on_drag_drop(GtkWidget *widget, GdkDragContext *context, gint x,
   GdkAtom target = gtk_drag_dest_find_target(widget, context, nullptr);
   if (target == GDK_NONE)
     return FALSE;
+  // A hover paths reply arriving after this point must not be sent as such.
+  g_object_set_data(G_OBJECT(context), kHoverPaths,
+                    GINT_TO_POINTER(kHoverPathsDone));
   g_object_set_data_full(
           G_OBJECT(context), kDropPosition, new DropPosition{x, y, time},
           [](gpointer data) { delete static_cast<DropPosition *>(data); });
@@ -234,6 +258,24 @@ gboolean on_drag_motion(GtkWidget *widget, GdkDragContext *drag_context,
   g_autoptr(FlValue) args = fl_value_new_float_list(point, 2);
   fl_method_channel_invoke_method(channel, "updated", args,
                                   nullptr, nullptr, nullptr);
+
+  // GTK only hands drag data over asynchronously: request the URI list once
+  // per drag, and send it as "hoverPaths_linux" from on_drag_data_received.
+  // A drag without a URI list holds no file path: send an empty list now.
+  if (!g_object_get_data(G_OBJECT(drag_context), kHoverPaths)) {
+    GdkAtom target = gdk_atom_intern_static_string(kUriTarget);
+    if (g_list_find(gdk_drag_context_list_targets(drag_context), target)) {
+      g_object_set_data(G_OBJECT(drag_context), kHoverPaths,
+                        GINT_TO_POINTER(kHoverPathsRequested));
+      gtk_drag_get_data(widget, drag_context, target, time);
+    } else {
+      g_object_set_data(G_OBJECT(drag_context), kHoverPaths,
+                        GINT_TO_POINTER(kHoverPathsDone));
+      g_autoptr(FlValue) empty = fl_value_new_string("");
+      fl_method_channel_invoke_method(channel, "hoverPaths_linux", empty,
+                                      nullptr, nullptr, nullptr);
+    }
+  }
   return FALSE;
 }
 
